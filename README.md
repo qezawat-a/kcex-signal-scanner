@@ -8,7 +8,19 @@ Multi-timeframe futures signal scanner for KCEX USDT-M perpetuals.
 - 6 strategies: EMA trend, RSI momentum, MACD cross, volume confirmation, price momentum, ADX strength
 - Multi-TF confirmation: `min_confidence`, `tf_min_confidence`, `min_agreeing_strategies`, `signal_scans_confirm`
 - Reversal alarm, periodic status report, pause/resume
-- Telegram alerts (optional)
+- Telegram alerts (optional) + Telegram control bot (`telegram_bot.py`) with auto `/` command menu
+
+## Telegram control bot (mini-app style panel)
+Run `telegram_bot.py` alongside (or instead of) the Actions schedule. It registers
+a `/` command menu in Telegram automatically via `setMyCommands`:
+`/status /scan /pause /resume /symbol /tfs /report /scanint /config /help`.
+```bash
+export TELEGRAM_BOT_TOKEN="123:ABC" TELEGRAM_CHAT_ID="123456789"  # or put them in .env
+python3 telegram_bot.py
+```
+Then open your bot in Telegram, tap `/` and pick a command — results come back as messages.
+Only your `TELEGRAM_CHAT_ID` can control it (others get "Not authorized").
+`/scan` runs a live scan and the full report is pushed automatically too.
 
 ## Quick start
 ```bash
