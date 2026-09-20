@@ -21,6 +21,25 @@ python3 telegram_bot.py
 Then open your bot in Telegram, tap `/` and pick a command — results come back as messages.
 Only your `TELEGRAM_CHAT_ID` can control it (others get "Not authorized").
 `/scan` runs a live scan and the full report is pushed automatically too.
+`/ask` talks to the AI agent (needs an LLM key, see below).
+
+## AI Agent (CRAG-style, scanner tools only)
+Same pattern as CRAG's `src/agent/` (loop + brain + tools + memory + skills + prompt),
+minus everything XT/trading — tools here are scanner ops only:
+`status, run_scan, set_symbol, set_timeframes, set_scan_interval, set_report_interval,
+set_thresholds, load_skill` + `remember/recall`.
+- `agent/providers.py` — multi-provider OpenAI-compatible chat (openai → anthropic → google priority, auto model resolve), env: `AI_API_KEY/AI_BASE_URL/AI_MODEL`, `ANTHROPIC_*`, `GEMINI_*`, or `NINEROUTER_URL/NINEROUTER_KEY`
+- `agent/loop.py` — tool-calling loop (max 6 rounds)
+- `agent/tools.py`, `agent/memory.py` (`data/memory.json`), `agent/skills.py` (`skills/*.md`), `agent/prompt.py` (SignalOps SOUL)
+- `skills/` ships with `scalping`, `swing`, `risk` playbooks — add your own `.md`
+```bash
+cp .env.example .env   # fill AI_API_KEY etc.
+python3 agent_cli.py --models      # check provider detection
+python3 agent_cli.py --ask "status ro bego"
+python3 agent_cli.py --chat        # REPL
+```
+Telegram: `/ask <sual>` (masalan `/ask bazar alan chetore?`), `/am <dastur>`, `/models`.
+No auto-trade: the agent only analyzes and reports signals.
 
 ## Quick start
 ```bash

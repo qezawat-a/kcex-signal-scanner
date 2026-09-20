@@ -28,6 +28,16 @@ import aiohttp
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 from scanner import load_config, save_config, set_paused, paused, one_scan  # noqa: E402
+try:
+    from agent.loop import run_agent  # noqa: E402
+    from agent.memory import Memory, memory_tools  # noqa: E402
+    from agent.providers import detect_providers  # noqa: E402
+    from agent.tools import scanner_tools  # noqa: E402
+    import scanner as _S  # noqa: E402
+    AGENT_OK = True
+except Exception as _e:  # agent optional — commands still work
+    AGENT_OK = False
+    AGENT_ERR = str(_e)
 
 VALID_TFS = {"1m", "3m", "5m", "15m", "1h", "4h", "1d", "1w"}
 
@@ -35,6 +45,7 @@ HELP = (
     "KCEX Scanner commands:\n"
     "/status — scanner status\n"
     "/scan — run one scan now\n"
+    "/ask <question> — ask the AI agent (tools + memory)\n"
     "/pause — pause scanner\n"
     "/resume — resume scanner\n"
     "/symbol ALL | BTC_USDT,ETH_USDT — set symbols\n"
@@ -42,6 +53,8 @@ HELP = (
     "/report 30 — report interval sec\n"
     "/scanint 10 — scan interval sec\n"
     "/config — show config\n"
+    "/am ARGS... — agent raw (e.g. /am run_scan)\n"
+    "/models — show LLM providers\n"
     "/help — this help"
 )
 
@@ -106,6 +119,45 @@ async def cmd_scan(cfg, reply):
     await reply("SCAN DONE (full report was also pushed automatically):\n" + tail)
 
 
+def _agent_tools(memory):
+    tools = scanner_tools(
+        load_config=_S.load_config, save_config=_S.save_config,
+        scan_market=_S.scan_market, compute_signal=_S.compute_signal,
+        update_state=_S.update_state, save_state=_S.save_state,
+        load_state=_S.load_state, format_report=_S.format_report,
+        fetch_tickers=getattr(_S, "fetch_tickers", None),
+    )
+    return tools + memory_tools(memory)
+
+
+async def cmd_ask(cfg, question):
+    if not AGENT_OK:
+        return f"Agent unavailable: {AGENT_ERR[:200]} (set LLM key? check logs)"
+    if not detect_providers():
+        return ("No LLM provider configured. Set AI_API_KEY (+AI_BASE_URL/AI_MODEL) "
+                "in .env, Railway variables, or Secrets, then /ask again.")
+    mem = Memory()
+    loop = asyncio.get_event_loop()
+    try:
+        res = await loop.run_in_executor(
+            None, lambda: run_agent(question, _agent_tools(mem), memory=mem))
+        prov = f" [{res.get('provider')}/{res.get('model')}]" if res.get("model") else ""
+        return (res.get("reply") or "(empty reply)") + prov
+    except Exception as e:
+        return f"Agent error: {type(e).__name__}: {str(e)[:400]}"
+
+
+async def cmd_models(cfg):
+    if not AGENT_OK:
+        return f"Agent unavailable: {AGENT_ERR[:200]}"
+    provs = detect_providers()
+    if not provs:
+        return "No LLM provider: set AI_API_KEY in env/.env."
+    return "Providers:\n" + "\n".join(
+        f"- {p['name']}: base={p['base_url']} model={'(auto)' if not p['model'] else p['model']}"
+        for p in provs)
+
+
 async def handle_command(cfg, token, owner_chat, chat_id, text, reply):
     parts = text.strip().split(None, 1)
     cmd = parts[0].split("@")[0].lower()
@@ -120,6 +172,19 @@ async def handle_command(cfg, token, owner_chat, chat_id, text, reply):
     elif cmd == "/scan":
         await reply("Scanning KCEX… (30 symbols x 4 TFs, ~10s)")
         await cmd_scan(c, reply)
+    elif cmd == "/ask":
+        if not arg:
+            await reply("Usage: /ask <question>  e.g. /ask bazar alan chetore?")
+            return
+        await reply("Agent fekr mikone… 🧠")
+        await reply(await cmd_ask(c, arg))
+    elif cmd == "/am":
+        if not arg:
+            await reply("Usage: /am <instruction>")
+            return
+        await reply(await cmd_ask(c, arg))
+    elif cmd == "/models":
+        await reply(await cmd_models(c))
     elif cmd == "/pause":
         set_paused(True)
         await reply("Paused ⏸")
@@ -174,6 +239,7 @@ async def poll(token, owner_chat):
             cmds = [
                 {"command": "status", "description": "scanner status"},
                 {"command": "scan", "description": "run one scan now"},
+                {"command": "ask", "description": "ask the AI agent"},
                 {"command": "pause", "description": "pause scanner"},
                 {"command": "resume", "description": "resume scanner"},
                 {"command": "symbol", "description": "set symbols"},
@@ -181,6 +247,7 @@ async def poll(token, owner_chat):
                 {"command": "report", "description": "set report interval"},
                 {"command": "scanint", "description": "set scan interval"},
                 {"command": "config", "description": "show config"},
+                {"command": "models", "description": "show LLM providers"},
             ]
             await s.post(f"https://api.telegram.org/bot{token}/setMyCommands",
                          json={"commands": cmds}, timeout=aiohttp.ClientTimeout(total=15))

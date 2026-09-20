@@ -3,3 +3,6 @@ __pycache__/
 state.json
 config.local.json
 .env
+data/memory.json
+agent/__pycache__/
+skills/__pycache__/
