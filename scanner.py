@@ -31,6 +31,25 @@ BASE_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://www.kcex.com"
 CONFIG_FILE = BASE_DIR / "config.json"
 STATE_FILE = BASE_DIR / "state.json"
+DOTENV_FILE = BASE_DIR / ".env"
+
+
+def load_dotenv():
+    """Load BASE_DIR/.env (KEY=VALUE per line) into os.environ if not already set."""
+    try:
+        if not DOTENV_FILE.exists():
+            return
+        for raw in DOTENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            if k and k not in os.environ:
+                os.environ[k] = v
+    except Exception:
+        pass
 PAUSE_FLAG = BASE_DIR / "state" / "pause"
 RESUME_FLAG = BASE_DIR / "state" / "resume"
 
@@ -52,6 +71,7 @@ HEADERS = {
 
 
 def load_config():
+    load_dotenv()
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
     cfg.setdefault("symbols", "ALL")
