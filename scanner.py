@@ -462,6 +462,9 @@ def compute_signal(cfg, state, symbols, results):
             "timeframes": {tf: tf_data.get(tf) for tf in cfg["timeframes"]},
             "avg_confidence": round(global_conf, 2),
             "active_timeframes": len(active_tfs),
+            "active_strategies": sorted(
+                {s for d in tf_scores for s in (d.get("details", {}).get("active_strategies") or [])}
+            ),
         }
         signals.append({
             "symbol": symbol,
