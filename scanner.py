@@ -385,7 +385,7 @@ async def fetch_tickers(session, cfg):
 async def fetch_kline(session, symbol, period, limit=7):
     data = await fetch_json(session, f"{BASE_URL}/fapi/v1/contract/kline/{symbol}", params={
         "period": period,
-        "limit": limit,
+        "limit": max(limit, 60),
     })
     if not data or not data.get("success"):
         return None
@@ -414,6 +414,9 @@ async def scan_market(session, cfg, state):
         for tf in cfg["timeframes"]:
             tasks.append(scan_one(session, cfg, state, symbol, tf, sem))
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    ok = sum(1 for r in results if not isinstance(r, Exception) and r and r[2])
+    state["tf_ok_count"] = ok
+    state["tf_fail_count"] = len(results) - ok
     return symbols, results
 
 
@@ -535,9 +538,13 @@ def format_report(cfg, state, symbols, signals, global_info, price_map):
     lines.append(f"KCEX SIGNAL SCAN  |  {now} UTC  |  scans={state.get('scan_count',0)}  signals={state.get('signal_count',0)}")
     lines.append(f"Symbols: {state.get('symbols_scanned',0)} | Timeframes: {','.join(cfg['timeframes'])} | Scan: {cfg['scan_interval_sec']}s | Report: {cfg['report_interval_sec']}s")
     lines.append(f"Global direction: {'LONG' if global_info['direction']==1 else 'SHORT' if global_info['direction']==-1 else 'NEUTRAL'} | Confidence: {global_info['confidence']:.1f} | Agreeing strategies: {global_info['agreeing_strategies']}/{len(STRATEGIES)}")
+    n_ok = state.get("tf_ok_count", 0)
+    n_fail = state.get("tf_fail_count", 0)
+    if n_ok or n_fail:
+        lines.append(f"TF results: ok={n_ok} fail={n_fail}")
     lines.append("-" * 90)
     if not signals:
-        lines.append("No confirmed signal.")
+        lines.append("No analyzable TF data (all kline fetches empty — check API limits/connectivity).")
         lines.append("=" * 90)
         return "\n".join(lines)
     count = 0
@@ -608,11 +615,14 @@ async def run_scan_loop(cfg):
         try:
             async with aiohttp.ClientSession() as session:
                 symbols, results = await scan_market(session, cfg, state)
-            price_data = {}
-            ticker = await fetch_json(session, f"{BASE_URL}/fapi/v1/contract/ticker")
-            if ticker and ticker.get("success"):
-                for item in ticker.get("data") or []:
-                    price_data[item.get("symbol")] = float(item.get("lastPrice", 0) or 0)
+                price_data = {}
+                ticker = await fetch_json(session, f"{BASE_URL}/fapi/v1/contract/ticker")
+                if ticker and ticker.get("success"):
+                    for item in ticker.get("data") or []:
+                        try:
+                            price_data[item.get("symbol")] = float(item.get("lastPrice", 0) or 0)
+                        except (TypeError, ValueError):
+                            continue
             signals, global_info = compute_signal(cfg, state, symbols, results)
             prev = update_state(state, global_info["direction"], global_info["confidence"])
             if global_info["direction"] != 0 and prev is not None and global_info["direction"] != prev and cfg.get("reversal_alarm", True):
@@ -664,11 +674,14 @@ async def one_scan(cfg):
     state["cfg"] = cfg
     async with aiohttp.ClientSession() as session:
         symbols, results = await scan_market(session, cfg, state)
-    price_data = {}
-    ticker = await fetch_json(session, f"{BASE_URL}/fapi/v1/contract/ticker")
-    if ticker and ticker.get("success"):
-        for item in ticker.get("data") or []:
-            price_data[item.get("symbol")] = float(item.get("lastPrice", 0) or 0)
+        price_data = {}
+        ticker = await fetch_json(session, f"{BASE_URL}/fapi/v1/contract/ticker")
+        if ticker and ticker.get("success"):
+            for item in ticker.get("data") or []:
+                try:
+                    price_data[item.get("symbol")] = float(item.get("lastPrice", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
     signals, global_info = compute_signal(cfg, state, symbols, results)
     update_state(state, global_info["direction"], global_info["confidence"])
     save_state(state)
