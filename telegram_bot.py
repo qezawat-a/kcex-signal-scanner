@@ -42,10 +42,10 @@ except Exception as _e:  # agent optional — commands still work
 VALID_TFS = {"1m", "3m", "5m", "15m", "1h", "4h", "1d", "1w"}
 
 HELP = (
-    "KCEX Scanner commands:\n"
+    "Harf bezan — harchi benevisi agent javab mide (chat mode, /ask nemikhad).\n"
+    "Command ha:\n"
     "/status — scanner status\n"
     "/scan — run one scan now\n"
-    "/ask <question> — ask the AI agent (tools + memory)\n"
     "/pause — pause scanner\n"
     "/resume — resume scanner\n"
     "/symbol ALL | BTC_USDT,ETH_USDT — set symbols\n"
@@ -53,7 +53,6 @@ HELP = (
     "/report 30 — report interval sec\n"
     "/scanint 10 — scan interval sec\n"
     "/config — show config\n"
-    "/am ARGS... — agent raw (e.g. /am run_scan)\n"
     "/models — show LLM providers\n"
     "/help — this help"
 )
@@ -228,7 +227,10 @@ async def handle_command(cfg, token, owner_chat, chat_id, text, reply):
         save_config(c)
         await reply("Saved. " + cfg_summary(c))
     else:
-        await reply("Unknown command.\n" + HELP)
+        # Plain chat: no prefix needed. Commands still work, but any normal
+        # message goes straight to the AI agent (chat mode).
+        await reply("Agent fekr mikone… 🧠")
+        await reply(await cmd_ask(c, text))
 
 
 async def poll(token, owner_chat):
