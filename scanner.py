@@ -685,8 +685,14 @@ async def one_scan(cfg):
     signals, global_info = compute_signal(cfg, state, symbols, results)
     update_state(state, global_info["direction"], global_info["confidence"])
     save_state(state)
-    print(format_report(cfg, state, symbols, signals, global_info, price_data))
+    report = format_report(cfg, state, symbols, signals, global_info, price_data)
+    print(report)
     print(f"Scanned {len(symbols)} symbols with {len(results)} TF results.")
+    # in --once / Actions mode also push the report to Telegram (if enabled)
+    sent = await send_telegram(cfg, report)
+    tg = cfg.get("telegram", {}) or {}
+    if tg.get("enabled"):
+        print(f"Telegram report: {'SENT ✅' if sent else 'FAILED ❌'}")
 
 
 def parse_args():
