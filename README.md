@@ -79,3 +79,23 @@ python3 scanner.py --set-timeframes 5m,15m,1h
 - No API key needed (public market data only).
 - No auto-trading — signals only.
 - Sandbox without DNS can't reach KCEX; run on a host with internet (VPS/Railway/GitHub Actions).
+
+## Railway deploy (recommended: scanner + bot + agent, one service, no database)
+1. Push repo → Railway → **New Project → Deploy from GitHub repo** → pick `kcex-signal-scanner`.
+   Start command is automatic (`railway.toml` → `python3 supervisor.py`, which runs the
+   scanner loop + Telegram bot + `/ask` agent in one process).
+2. **Variables** tab → add:
+   - `TELEGRAM_BOT_TOKEN` = token az `@BotFather`
+   - `TELEGRAM_CHAT_ID` = chat id adadi
+   - `AI_API_KEY` (+ optional `AI_BASE_URL`, `AI_MODEL`) — ya `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `NINEROUTER_URL`+`NINEROUTER_KEY`
+3. **Redeploy**. Logs bayad neshun bede:
+   `supervisor: starting telegram bot (owner ...)` + `KCEX Signal Scanner started...`
+4. To Telegram `/status` bezan — age javab dad, hame chi vasle.
+
+**Database lazem nist.** State ha file hastan:
+- `config.json` / `state.json` — settings + scan state (hot-reload har cycle, restart lazem nist)
+- `data/memory.json` — agent memory. Railway disk ephemeral e: bad az redeploy pak mishe.
+  Age memory mandegar mikhay: Railway → **+ New → Database → PostgreSQL** ezafe kon
+  (code felan file-based e, Postgres faghat vaghti lazem mishe ke bekhay memory/sql log dashte bashi —
+  behem bego ta adapteresh ro ezafe konam).
+- GitHub Actions schedule ro mituni negah dari (backup scan) ya pak koni — Railway khodesh scan mizane.

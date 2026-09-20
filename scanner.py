@@ -603,6 +603,16 @@ async def run_scan_loop(cfg):
     print(f"KCEX Signal Scanner started. TFs={cfg['timeframes']} interval={cfg['scan_interval_sec']}s")
     print("Pause/resume: touch state/pause  |  status: python3 scanner.py --status")
     while True:
+        # re-read mutable keys so Telegram /commands apply without restart
+        try:
+            fresh = load_config()
+            for k in ("symbols", "timeframes", "scan_interval_sec", "report_interval_sec",
+                      "min_confidence", "tf_min_confidence", "min_agreeing_strategies",
+                      "signal_scans_confirm", "reversal_alarm", "max_symbols",
+                      "concurrency", "sl_atr_multiple", "tp_atr_multiple", "telegram"):
+                cfg[k] = fresh.get(k, cfg.get(k))
+        except Exception:
+            pass
         if paused():
             state["paused"] = True
             save_state(state)
