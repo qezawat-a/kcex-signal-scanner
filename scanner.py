@@ -68,7 +68,28 @@ def load_config():
     cfg.setdefault("sl_atr_multiple", 1.5)
     cfg.setdefault("tp_atr_multiple", 2.0)
     cfg.setdefault("telegram", {"enabled": False, "token": "", "chat_id": ""})
+    tg = cfg.get("telegram") or {}
+    env_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    env_chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if env_token:
+        tg["token"] = env_token
+    if env_chat:
+        tg["chat_id"] = str(env_chat)
+    # auto-enable when both credentials are present (env or file)
+    if tg.get("token") and tg.get("chat_id"):
+        if not tg.get("enabled"):
+            # only auto-enable if credentials came from env (explicit file opt-in otherwise)
+            if env_token and env_chat:
+                tg["enabled"] = True
+    cfg["telegram"] = tg
     return cfg
+
+
+def save_config(cfg):
+    # don't persist transient keys
+    data = {k: v for k, v in cfg.items()}
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def load_state():
@@ -518,19 +539,31 @@ def format_report(cfg, state, symbols, signals, global_info, price_map):
     return "\n".join(lines)
 
 
-async def send_telegram(cfg, text):
-    if not cfg.get("telegram", {}).get("enabled"):
-        return
-    token = cfg["telegram"]["token"]
-    chat = cfg["telegram"]["chat_id"]
+async def send_telegram(cfg, text, parse_mode=None):
+    tg = cfg.get("telegram", {}) or {}
+    if not tg.get("enabled"):
+        return False
+    token = (tg.get("token") or "").strip()
+    chat = str(tg.get("chat_id") or "").strip()
     if not token or not chat:
-        return
+        print("Telegram skipped: missing token or chat_id")
+        return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat, "text": text[:4096]}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
-        async with aiohttp.ClientSession() as s:
-            await s.post(url, params={"chat_id": chat, "text": text[:4096]})
-    except Exception:
-        pass
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.post(url, data=payload) as r:
+                body = await r.text()
+                if r.status != 200:
+                    print(f"Telegram send failed HTTP {r.status}: {body[:300]}")
+                    return False
+                return True
+    except Exception as e:
+        print(f"Telegram send error: {type(e).__name__}: {e}")
+        return False
 
 
 async def run_scan_loop(cfg):
@@ -594,6 +627,9 @@ def print_status(cfg):
     print(f"Min confidence: {cfg.get('min_confidence')}")
     print(f"TF min conf   : {cfg.get('tf_min_confidence')}")
     print(f"Confirm scans : {cfg.get('signal_scans_confirm')}")
+    tg = cfg.get("telegram", {}) or {}
+    masked = ("..." + tg.get("token", "")[-4:]) if tg.get("token") else "(empty)"
+    print(f"Telegram      : enabled={tg.get('enabled')} token={masked} chat_id={tg.get('chat_id') or '(empty)'}")
     print(f"Last scan     : {state.get('last_scan_time')}")
     print(f"Last report   : {state.get('last_report_time')}")
     print(f"Total scans   : {state.get('scan_count',0)}")
@@ -631,8 +667,17 @@ def parse_args():
     p.add_argument("--min-agreeing", type=int, help="Minimum agreeing strategies")
     p.add_argument("--confirm", type=int, help="Confirmation scans")
     p.add_argument("--start", action="store_true", help="Start/resume scanner")
+    p.add_argument("--once", action="store_true", help="Single scan cycle then exit")
     p.add_argument("--pause", action="store_true", help="Pause scanner")
+    p.add_argument("--resume", action="store_true", help="Resume scanner")
     p.add_argument("--status", action="store_true", help="Print status")
+    p.add_argument("--telegram-on", action="store_true", help="Enable Telegram alerts (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env or config)")
+    p.add_argument("--telegram-off", action="store_true", help="Disable Telegram alerts")
+    p.add_argument("--telegram-test", action="store_true", help="Send a Telegram test message then exit")
+    p.add_argument("--set-symbol", help="Persist symbol(s) to config: ALL or comma list e.g. BTC_USDT,ETH_USDT")
+    p.add_argument("--set-timeframes", help="Persist timeframes to config e.g. 1m,3m,5m,15m")
+    p.add_argument("--set-scan-interval", type=int, help="Persist scan interval seconds")
+    p.add_argument("--set-report-interval", type=int, help="Persist report interval seconds")
     return p.parse_args()
 
 
@@ -655,9 +700,45 @@ def main():
         cfg["min_agreeing_strategies"] = args.min_agreeing
     if args.confirm:
         cfg["signal_scans_confirm"] = args.confirm
+    dirty = False
+    if args.set_symbol:
+        v = args.set_symbol.strip()
+        cfg["symbols"] = "ALL" if v.upper() == "ALL" else [s.strip() for s in v.split(",")]
+        dirty = True
+    if args.set_timeframes:
+        cfg["timeframes"] = [t.strip() for t in args.set_timeframes.split(",")]
+        dirty = True
+    if args.set_scan_interval:
+        cfg["scan_interval_sec"] = args.set_scan_interval
+        dirty = True
+    if args.set_report_interval:
+        cfg["report_interval_sec"] = args.set_report_interval
+        dirty = True
+    if args.telegram_on:
+        cfg.setdefault("telegram", {}).setdefault("token", "")
+        cfg["telegram"]["enabled"] = True
+        dirty = True
+    if args.telegram_off:
+        cfg.setdefault("telegram", {}).setdefault("token", "")
+        cfg["telegram"]["enabled"] = False
+        dirty = True
+    if dirty:
+        save_config(cfg)
+        print("Config saved:", CONFIG_FILE)
+    if args.telegram_test:
+        ok = asyncio.run(send_telegram(cfg, "KCEX scanner Telegram test ✅ (alerts working)"))
+        print("Telegram test:", "SENT ✅" if ok else "FAILED ❌ (check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env or config)")
+        return
+    if args.once:
+        asyncio.run(one_scan(cfg))
+        return
     if args.pause:
         set_paused(True)
-        print("Paused. Use --resume or touch state/resume.")
+        print("Paused. Use --resume to resume.")
+        return
+    if args.resume:
+        set_paused(False)
+        print("Resumed.")
         return
     if args.start:
         set_paused(False)
@@ -668,7 +749,7 @@ def main():
     if args.start or not paused():
         asyncio.run(run_scan_loop(cfg))
     else:
-        print("Scanner paused. Use --start or touch state/resume.")
+        print("Scanner paused. Use --start or --resume.")
 
 
 if __name__ == "__main__":
