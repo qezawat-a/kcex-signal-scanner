@@ -1,6 +1,6 @@
-[nix]
 [build]
 builder = "NIXPACKS"
+
 [deploy]
 startCommand = "python3 supervisor.py"
 restartPolicyType = "ON_FAILURE"
