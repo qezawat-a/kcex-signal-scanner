@@ -575,66 +575,73 @@ def build_signal_entry(symbol, analysis, price, cfg):
         "confidence": analysis["confidence"],
         "timeframes": {tf: tf_data[tf]["confidence"] for tf in cfg["timeframes"] if tf_data.get(tf)},
         "strategies": analysis["details"]["active_strategies"],
+        "risk_reward": (cfg.get("tp_atr_multiple", 2.0) / cfg.get("sl_atr_multiple", 1.5)) if atr_val else 0,
     }
 
 
 def format_report(cfg, state, symbols, signals, global_info, price_map):
     lines = []
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    lines.append("KCEX SIGNAL SCAN")
+    lines.append(now + " UTC")
+    lines.append(f"scans={state.get('scan_count', 0)} signals={state.get('signal_count', 0)}")
 
     if isinstance(symbols, list) and symbols:
-        sym_names = ", ".join(symbols)
-        prices = []
         for sym in symbols:
             p = price_map.get(sym, 0)
-            prices.append(f"{sym}: {p:.6g}" if p else f"{sym}: -")
-        sym_line = f"Symbol{'s' if len(symbols) != 1 else ''}: {sym_names} | Price: {'; '.join(prices)}"
+            lines.append(f"Symbol: {sym}")
+            lines.append(f"Price: {p:.6g}" if p else f"Price: -")
     else:
-        sym_line = f"Symbols scanned: {state.get('symbols_scanned', 0)}"
-    lines.append("=" * 110)
-    lines.append(f"KCEX SIGNAL SCAN  |  {now} UTC  |  scans={state.get('scan_count',0)}  signals={state.get('signal_count',0)}")
-    lines.append(f"{sym_line} | Timeframes: {','.join(cfg['timeframes'])} | Scan: {cfg['scan_interval_sec']}s | Report: {cfg['report_interval_sec']}s")
-    lines.append(f"Global direction: {'LONG' if global_info['direction']==1 else 'SHORT' if global_info['direction']==-1 else 'NEUTRAL'} | Confidence: {global_info['confidence']:.1f} | Agreeing strategies: {global_info['agreeing_strategies']}/{len(STRATEGIES)}")
+        lines.append(f"Symbols scanned: {state.get('symbols_scanned', 0)}")
+
+    lines.append(f"Timeframes: {' '.join(cfg['timeframes'])}")
+    lines.append(f"Scan: {cfg['scan_interval_sec']}s Report: {cfg['report_interval_sec']}s")
+    lines.append(f"Min confidence: {cfg.get('min_confidence', 70)}")
+    lines.append(f"Min agreeing strategies: {cfg.get('min_agreeing_strategies', 3)}")
+    lines.append(f"Confirm scans: {cfg.get('signal_scans_confirm', 2)}")
+
+    lines.append(f"Global direction: {'LONG' if global_info['direction']==1 else 'SHORT' if global_info['direction']==-1 else 'NEUTRAL'}")
+    lines.append(f"Confidence: {global_info['confidence']:.1f}")
+    lines.append(f"Agreeing strategies: {global_info['agreeing_strategies']}/{len(STRATEGIES)}")
     n_ok = state.get("tf_ok_count", 0)
     n_fail = state.get("tf_fail_count", 0)
-    if n_ok or n_fail:
-        lines.append(f"TF results: ok={n_ok} fail={n_fail}")
-    lines.append("-" * 110)
+    lines.append(f"TF results: ok={n_ok} fail={n_fail}")
+
     if not signals:
-        if n_fail and not n_ok:
-            lines.append("No analyzable TF data (all kline fetches empty — check API limits/connectivity).")
-        else:
-            lines.append(f"No signal: best conf {global_info['confidence']:.1f} < min {cfg.get('min_confidence',70)} "
-                         f"| strategies {global_info['agreeing_strategies']}/{len(STRATEGIES)} (min {cfg.get('min_agreeing_strategies',3)}) "
-                         f"| confirmed {state.get('confirm_count',0)}/{cfg.get('signal_scans_confirm',2)}.")
-            best = max(signals, key=lambda s: s.get("confidence", 0)) if signals else None
-            if best:
-                tfc = ", ".join(f"{tf}:{c:.0f}" for tf, c in (best.get("timeframes") or {}).items())
-                lines.append(f"Best candidate: {best.get('symbol')} {best.get('direction','?')} conf {best.get('confidence',0):.1f} | TFs {tfc or '-'}")
-            else:
-                # show current prices for requested symbols even when no signal
-                for sym in (symbols if isinstance(symbols, list) else []):
-                    p = price_map.get(sym, 0)
-                    if p:
-                        lines.append(f"Price  {sym}: {p:.6g}")
-        lines.append("=" * 110)
+        lines.append("No confirmed signal")
+        lines.append(f"Best conf {global_info['confidence']:.1f} < min {cfg.get('min_confidence',70)}")
+        best = max(signals, key=lambda s: s.get("confidence", 0)) if signals else None
+        if best:
+            best_strats = (best.get("details") or {}).get("active_strategies") or []
+            best_tfs = best.get("timeframes") or {}
+            lines.append(f"Best candidate: {best.get('symbol')} {best.get('direction','?')} conf {best.get('confidence',0):.1f}")
+            lines.append(f"Best TFs: {' '.join(f'{t}:{c:.0f}' for t, c in best_tfs.items()) or '-'}")
+            lines.append(f"Best strategies: {' '.join(best_strats) or '-'}")
         return "\n".join(lines)
+
     count = 0
     for sig in signals[:40]:
         sym = sig["symbol"]
         price = price_map.get(sym, 0)
-        if sig["confidence"] >= cfg.get("min_confidence", 70) and sig["direction"] != 0:
-            entry = build_signal_entry(sym, sig, price, cfg)
-            count += 1
-            lines.append(
-                f"{sym:12s} | {entry['direction']:4s} | price {price:.6g} | conf {entry['confidence']:5.1f} | "
-                f"entry {entry['entry']:>10} | SL {entry['sl']:>10} ({entry['sl_pct']:+.3f}%) | "
-                f"TP {entry['tp']:>10} ({entry['tp_pct']:+.3f}%) | "
-                f"TFs {entry['timeframes']} | {','.join(entry['strategies'][:4])}"
-            )
-    lines.append("-" * 110)
-    lines.append(f"Showing {count} high-confidence signals (threshold {cfg.get('min_confidence',70)}). Full details in state.json.")
-    lines.append("=" * 110)
+        if not (sig["confidence"] >= cfg.get("min_confidence", 70) and sig["direction"] != 0):
+            continue
+        count += 1
+        entry = build_signal_entry(sym, sig, price, cfg)
+        tf = sig.get("timeframes") or {}
+        strat = sig.get("strategies") or []
+        lines.append(f"Signal {count}")
+        lines.append(f"Symbol: {sym}")
+        lines.append(f"Direction: {entry['direction']}")
+        lines.append(f"Price: {price:.6g}")
+        lines.append(f"Entry: {entry['entry']}")
+        lines.append(f"SL: {entry['sl']} ({entry['sl_pct']:+.2f}%)")
+        lines.append(f"TP: {entry['tp']} ({entry['tp_pct']:+.2f}%)")
+        lines.append(f"Confidence: {entry['confidence']:.1f}")
+        lines.append(f"Timeframes: {' '.join(f'{t}:{c:.0f}' for t, c in tf.items()) or '-'}")
+        lines.append(f"Strategies: {' '.join(strat[:8]) or '-'}")
+        lines.append(f"Risk/Reward: {entry.get('risk_reward', 0):.2f}")
+
+    lines.append(f"Total confirmed signals: {count}")
     return "\n".join(lines)
 
 
