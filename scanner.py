@@ -26,6 +26,7 @@ from pathlib import Path
 import aiohttp
 import numpy as np
 import pandas as pd
+import requests
 
 BASE_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://www.kcex.com"
@@ -74,7 +75,14 @@ def load_config():
     load_dotenv()
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
-    cfg.setdefault("symbols", "ALL")
+    # Backwards-compatible single-symbol support:
+    #   symbol (str) takes precedence over symbols when present.
+    symbol_override = cfg.get("symbol")
+    if symbol_override and str(symbol_override).strip() and str(symbol_override).upper() != "ALL":
+        cfg["symbols"] = [str(symbol_override).strip()]
+    else:
+        cfg.setdefault("symbols", "ALL")
+    cfg.setdefault("symbol", cfg.get("symbols"))
     cfg.setdefault("timeframes", ["1m", "3m", "5m", "15m"])
     cfg.setdefault("scan_interval_sec", 10)
     cfg.setdefault("report_interval_sec", 30)
@@ -83,7 +91,7 @@ def load_config():
     cfg.setdefault("min_agreeing_strategies", 3)
     cfg.setdefault("signal_scans_confirm", 2)
     cfg.setdefault("reversal_alarm", True)
-    cfg.setdefault("max_symbols", 30)
+    cfg.setdefault("max_symbols", 1)
     cfg.setdefault("concurrency", 6)
     cfg.setdefault("sl_atr_multiple", 1.5)
     cfg.setdefault("tp_atr_multiple", 2.0)
@@ -375,11 +383,14 @@ async def fetch_tickers(session, cfg):
     if not data or not data.get("success"):
         return []
     items = data.get("data") or []
-    max_symbols = cfg.get("max_symbols", 30)
-    if cfg.get("symbols") == "ALL":
-        items = sorted(items, key=lambda x: float(x.get("volume24", 0) or 0), reverse=True)[:max_symbols]
-        return [i.get("symbol") for i in items if i.get("symbol")]
-    return cfg.get("symbols", [])
+    symbols = cfg.get("symbols", "ALL")
+    if symbols == "ALL":
+        items = sorted(items, key=lambda x: float(x.get("volume24", 0) or 0), reverse=True)
+        max_symbols = cfg.get("max_symbols", 1)
+        return [i.get("symbol") for i in items[:max_symbols] if i.get("symbol")]
+    if isinstance(symbols, str):
+        return [symbols] if symbols and symbols.upper() != "ALL" else []
+    return [i for i in symbols if i]
 
 
 async def fetch_kline(session, symbol, period, limit=7):
@@ -501,6 +512,10 @@ def update_state(state, global_dir, global_conf):
         state["signal_count"] = state.get("signal_count", 0) + 1
         reversal = (prev is not None and prev != global_dir)
         state["last_confirmed_direction"] = global_dir
+        state["signal_fired_at"] = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+        state["last_signal_was_reversal"] = reversal
+    else:
+        state["last_signal_was_reversal"] = False
     state["current_direction"] = global_dir
     state["current_confidence"] = global_conf
     state["last_report_time"] = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
@@ -537,18 +552,43 @@ def build_signal_entry(symbol, analysis, price, cfg):
 def format_report(cfg, state, symbols, signals, global_info, price_map):
     lines = []
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    lines.append("=" * 90)
+
+    if isinstance(symbols, list) and symbols:
+        sym_names = ", ".join(symbols)
+        prices = []
+        for sym in symbols:
+            p = price_map.get(sym, 0)
+            prices.append(f"{sym}: {p:.6g}" if p else f"{sym}: -")
+        sym_line = f"Symbol{'s' if len(symbols) != 1 else ''}: {sym_names} | Price: {'; '.join(prices)}"
+    else:
+        sym_line = f"Symbols scanned: {state.get('symbols_scanned', 0)}"
+    lines.append("=" * 110)
     lines.append(f"KCEX SIGNAL SCAN  |  {now} UTC  |  scans={state.get('scan_count',0)}  signals={state.get('signal_count',0)}")
-    lines.append(f"Symbols: {state.get('symbols_scanned',0)} | Timeframes: {','.join(cfg['timeframes'])} | Scan: {cfg['scan_interval_sec']}s | Report: {cfg['report_interval_sec']}s")
+    lines.append(f"{sym_line} | Timeframes: {','.join(cfg['timeframes'])} | Scan: {cfg['scan_interval_sec']}s | Report: {cfg['report_interval_sec']}s")
     lines.append(f"Global direction: {'LONG' if global_info['direction']==1 else 'SHORT' if global_info['direction']==-1 else 'NEUTRAL'} | Confidence: {global_info['confidence']:.1f} | Agreeing strategies: {global_info['agreeing_strategies']}/{len(STRATEGIES)}")
     n_ok = state.get("tf_ok_count", 0)
     n_fail = state.get("tf_fail_count", 0)
     if n_ok or n_fail:
         lines.append(f"TF results: ok={n_ok} fail={n_fail}")
-    lines.append("-" * 90)
+    lines.append("-" * 110)
     if not signals:
-        lines.append("No analyzable TF data (all kline fetches empty — check API limits/connectivity).")
-        lines.append("=" * 90)
+        if n_fail and not n_ok:
+            lines.append("No analyzable TF data (all kline fetches empty — check API limits/connectivity).")
+        else:
+            lines.append(f"No signal: best conf {global_info['confidence']:.1f} < min {cfg.get('min_confidence',70)} "
+                         f"| strategies {global_info['agreeing_strategies']}/{len(STRATEGIES)} (min {cfg.get('min_agreeing_strategies',3)}) "
+                         f"| confirmed {state.get('confirm_count',0)}/{cfg.get('signal_scans_confirm',2)}.")
+            best = max(signals, key=lambda s: s.get("confidence", 0)) if signals else None
+            if best:
+                tfc = ", ".join(f"{tf}:{c:.0f}" for tf, c in (best.get("timeframes") or {}).items())
+                lines.append(f"Best candidate: {best.get('symbol')} {best.get('direction','?')} conf {best.get('confidence',0):.1f} | TFs {tfc or '-'}")
+            else:
+                # show current prices for requested symbols even when no signal
+                for sym in (symbols if isinstance(symbols, list) else []):
+                    p = price_map.get(sym, 0)
+                    if p:
+                        lines.append(f"Price  {sym}: {p:.6g}")
+        lines.append("=" * 110)
         return "\n".join(lines)
     count = 0
     for sig in signals[:40]:
@@ -558,14 +598,14 @@ def format_report(cfg, state, symbols, signals, global_info, price_map):
             entry = build_signal_entry(sym, sig, price, cfg)
             count += 1
             lines.append(
-                f"{sym:12s} | {entry['direction']:4s} | conf {entry['confidence']:5.1f} | "
+                f"{sym:12s} | {entry['direction']:4s} | price {price:.6g} | conf {entry['confidence']:5.1f} | "
                 f"entry {entry['entry']:>10} | SL {entry['sl']:>10} ({entry['sl_pct']:+.3f}%) | "
                 f"TP {entry['tp']:>10} ({entry['tp_pct']:+.3f}%) | "
                 f"TFs {entry['timeframes']} | {','.join(entry['strategies'][:4])}"
             )
-    lines.append("-" * 90)
+    lines.append("-" * 110)
     lines.append(f"Showing {count} high-confidence signals (threshold {cfg.get('min_confidence',70)}). Full details in state.json.")
-    lines.append("=" * 90)
+    lines.append("=" * 110)
     return "\n".join(lines)
 
 
@@ -655,6 +695,31 @@ async def run_scan_loop(cfg):
         await asyncio.sleep(cfg.get("scan_interval_sec", 10))
 
 
+def fetch_current_prices(cfg):
+    """Fetch lastPrice for configured symbols (best-effort, never blocks hard)."""
+    try:
+        symbols = cfg.get("symbols", [])
+        if isinstance(symbols, str) and symbols.upper() != "ALL":
+            syms = [symbols]
+        elif isinstance(symbols, list):
+            syms = symbols
+        else:
+            return {}
+        resp = requests.get(f"{BASE_URL}/fapi/v1/contract/ticker", timeout=8)
+        data = resp.json()
+        if not data.get("success"):
+            return {}
+        all_prices = {}
+        for item in data.get("data") or []:
+            try:
+                all_prices[item.get("symbol")] = float(item.get("lastPrice", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return {sym: all_prices.get(sym, 0) for sym in syms}
+    except Exception:
+        return {}
+
+
 def print_status(cfg):
     state = load_state()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -667,6 +732,10 @@ def print_status(cfg):
     print(f"Report interval: {cfg.get('report_interval_sec')}s")
     print(f"Timeframes    : {','.join(cfg.get('timeframes',[]))}")
     print(f"Symbols       : {cfg.get('symbols')}")
+    prices = fetch_current_prices(cfg)
+    if prices:
+        price_parts = [f"{sym}: {p:.6g}" if p else f"{sym}: -" for sym, p in prices.items()]
+        print(f"Current price : {'; '.join(price_parts)}")
     print(f"Min confidence: {cfg.get('min_confidence')}")
     print(f"TF min conf   : {cfg.get('tf_min_confidence')}")
     print(f"Confirm scans : {cfg.get('signal_scans_confirm')}")
