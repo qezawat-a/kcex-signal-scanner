@@ -30,6 +30,15 @@ import requests
 
 import db
 
+# scanner.py can also be the process entrypoint (GitHub Actions `--once`,
+# plain `python3 scanner.py`, non-TTY containers). Force line buffering so
+# print() output is visible in logs instead of sitting in a pipe buffer.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
 BASE_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://www.kcex.com"
 CONFIG_FILE = BASE_DIR / "config.json"
