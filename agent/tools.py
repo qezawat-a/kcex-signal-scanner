@@ -10,7 +10,10 @@ from .skills import list_skills
 
 def scanner_tools(load_config, save_config, scan_market, compute_signal,
                   update_state, save_state, load_state, format_report,
-                  fetch_tickers=None):
+                  fetch_tickers=None, sync_symbols=None):
+    if sync_symbols is None:
+        def sync_symbols(c):  # noqa: F811
+            return c
     def _cfg():
         return load_config()
 
@@ -69,8 +72,10 @@ def scanner_tools(load_config, save_config, scan_market, compute_signal,
         cfg = _cfg()
         v = (symbols or "").strip()
         cfg["symbols"] = "ALL" if v.upper() == "ALL" else [s.strip() for s in v.split(",") if s.strip()]
+        cfg["symbol"] = cfg["symbols"][0] if isinstance(cfg["symbols"], list) and len(cfg["symbols"]) == 1 else ("ALL" if cfg["symbols"] == "ALL" else cfg["symbols"])
+        sync_symbols(cfg)
         save_config(cfg)
-        return f"symbols={cfg['symbols']}"
+        return f"symbols={cfg['symbols']} symbol={cfg.get('symbol')}"
 
     def _set_timeframes(timeframes):
         cfg = _cfg()

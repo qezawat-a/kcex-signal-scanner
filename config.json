@@ -1,6 +1,11 @@
 {
   "symbol": "BTC_USDT",
-  "timeframes": ["1m", "3m", "5m", "15m"],
+  "timeframes": [
+    "1m",
+    "3m",
+    "5m",
+    "15m"
+  ],
   "scan_interval_sec": 10,
   "report_interval_sec": 30,
   "min_confidence": 70,
@@ -15,5 +20,9 @@
     "enabled": false,
     "token": "",
     "chat_id": ""
-  }
+  },
+  "symbols": [
+    "SAGA_USDT"
+  ],
+  "max_symbols": 1
 }

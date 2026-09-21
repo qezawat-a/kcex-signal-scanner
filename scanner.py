@@ -71,18 +71,47 @@ HEADERS = {
 }
 
 
+def sync_symbols(cfg):
+    """Keep `symbol` and `symbols` in sync.
+
+    `symbol` is the canonical single-symbol config (e.g. BTC_USDT).
+    `symbols` is the runtime list used by scan_market. One or the other
+    can be edited; the other is derived so it never drifts back.
+    """
+    symbol = cfg.get("symbol")
+    symbols = cfg.get("symbols")
+
+    # Explicit symbol takes precedence over an old symbols list.
+    if symbol and str(symbol).strip() and str(symbol).upper() != "ALL":
+        cfg["symbols"] = [str(symbol).strip()]
+        cfg["symbol"] = str(symbol).strip()
+        return cfg
+
+    if isinstance(symbols, str) and symbols.upper() != "ALL":
+        cfg["symbols"] = [symbols]
+        cfg["symbol"] = symbols
+        return cfg
+
+    if isinstance(symbols, list) and symbols:
+        if len(symbols) == 1:
+            cfg["symbol"] = symbols[0]
+        else:
+            cfg["symbol"] = "ALL"
+        return cfg
+
+    # symbols is ALL, missing, or empty
+    cfg["symbols"] = "ALL"
+    cfg["symbol"] = "ALL"
+    return cfg
+
+
 def load_config():
     load_dotenv()
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
-    # Backwards-compatible single-symbol support:
-    #   symbol (str) takes precedence over symbols when present.
-    symbol_override = cfg.get("symbol")
-    if symbol_override and str(symbol_override).strip() and str(symbol_override).upper() != "ALL":
-        cfg["symbols"] = [str(symbol_override).strip()]
-    else:
-        cfg.setdefault("symbols", "ALL")
-    cfg.setdefault("symbol", cfg.get("symbols"))
+    cfg.setdefault("symbol", "BTC_USDT")
+    cfg.setdefault("symbols", "ALL")
+    cfg = sync_symbols(cfg)
     cfg.setdefault("timeframes", ["1m", "3m", "5m", "15m"])
     cfg.setdefault("scan_interval_sec", 10)
     cfg.setdefault("report_interval_sec", 30)
@@ -807,8 +836,10 @@ def main():
     cfg = load_config()
     if args.symbol:
         cfg["symbols"] = [s.strip() for s in args.symbol.split(",")]
+        sync_symbols(cfg)
     if args.timeframes:
         cfg["timeframes"] = [t.strip() for t in args.timeframes.split(",")]
+        sync_symbols(cfg)
     if args.scan_interval:
         cfg["scan_interval_sec"] = args.scan_interval
     if args.report_interval:
@@ -825,9 +856,11 @@ def main():
     if args.set_symbol:
         v = args.set_symbol.strip()
         cfg["symbols"] = "ALL" if v.upper() == "ALL" else [s.strip() for s in v.split(",")]
+        sync_symbols(cfg)
         dirty = True
     if args.set_timeframes:
         cfg["timeframes"] = [t.strip() for t in args.set_timeframes.split(",")]
+        sync_symbols(cfg)
         dirty = True
     if args.set_scan_interval:
         cfg["scan_interval_sec"] = args.set_scan_interval

@@ -27,7 +27,7 @@ import time
 import aiohttp
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
-from scanner import load_config, save_config, set_paused, paused, one_scan  # noqa: E402
+from scanner import load_config, save_config, set_paused, paused, one_scan, sync_symbols  # noqa: E402
 try:
     from agent.loop import run_agent  # noqa: E402
     from agent.memory import Memory, memory_tools  # noqa: E402
@@ -125,6 +125,7 @@ def _agent_tools(memory):
         update_state=_S.update_state, save_state=_S.save_state,
         load_state=_S.load_state, format_report=_S.format_report,
         fetch_tickers=getattr(_S, "fetch_tickers", None),
+        sync_symbols=_S.sync_symbols,
     )
     return tools + memory_tools(memory)
 
@@ -195,6 +196,7 @@ async def handle_command(cfg, token, owner_chat, chat_id, text, reply):
             await reply("Usage: /symbol ALL  or  /symbol BTC_USDT,ETH_USDT")
             return
         c["symbols"] = "ALL" if arg.upper() == "ALL" else [s.strip() for s in arg.split(",") if s.strip()]
+        sync_symbols(c)
         save_config(c)
         await reply("Saved. " + cfg_summary(c))
     elif cmd == "/tfs":

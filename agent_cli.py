@@ -23,6 +23,7 @@ def build_tools(memory):
         update_state=S.update_state, save_state=S.save_state,
         load_state=S.load_state, format_report=S.format_report,
         fetch_tickers=getattr(S, "fetch_tickers", None),
+        sync_symbols=S.sync_symbols,
     )
     return tools + memory_tools(memory)
 
