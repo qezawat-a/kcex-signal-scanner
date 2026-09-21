@@ -21,8 +21,6 @@
     "token": "",
     "chat_id": ""
   },
-  "symbols": [
-    "SAGA_USDT"
-  ],
-  "max_symbols": 1
+  "symbols": "ALL",
+  "max_symbols": 30
 }
