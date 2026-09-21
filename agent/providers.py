@@ -1,15 +1,15 @@
-"""Provider detection + OpenAI-compatible chat (CRAG brain.js/config.js port).
+"""Provider detection + OpenAI-compatible chat.
 
-Env (read from process env + local .env, same loader style as scanner):
-  AI_API_KEY        OpenAI-compatible key (OpenAI / DeepSeek / Groq / OpenRouter / 9Router ...)
-  AI_BASE_URL       base URL, default https://api.openai.com/v1
-  AI_MODEL          model name, or "auto" (probe /models for first usable)
-  ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL + ANTHROPIC_MODEL (optional 2nd provider)
-  GEMINI_API_KEY    + GEMINI_BASE_URL    + GEMINI_MODEL    (optional 3rd, OpenAI-compat route)
-  NINEROUTER_URL / NINEROUTER_KEY  (shorthand: maps to AI_BASE_URL/AI_API_KEY when AI_* unset)
+No model names hardcoded. Agar gateway (9Router / OpenAI-compatible)
+ba AI_BASE_URL / NINEROUTER_URL set bashe, /v1/models mishen va model
+haye mojaz ro auto entekhab mikonim. Sirf API key lazem ast agar
+gateway auth req karde.
 
-Priority: openai -> anthropic -> google. First provider with a key wins for a
-request; on failure the next provider is tried (same as CRAG brain.chat).
+Env:
+  AI_API_KEY / AI_BASE_URL / AI_MODEL
+  ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_MODEL
+  GEMINI_API_KEY / GEMINI_BASE_URL / GEMINI_MODEL
+  NINEROUTER_URL / NINEROUTER_KEY
 """
 import json
 import os
@@ -20,9 +20,9 @@ TIMEOUT_S = 60
 PROBE_TIMEOUT_S = 12
 MAX_TOKENS = 2048
 
-PRIORITY = ["openai", "anthropic", "google"]
 KEY_VAR = {"openai": "AI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "google": "GEMINI_API_KEY"}
 MODEL_VAR = {"openai": "AI_MODEL", "anthropic": "ANTHROPIC_MODEL", "google": "GEMINI_MODEL"}
+BASE_VAR = {"openai": "AI_BASE_URL", "anthropic": "ANTHROPIC_BASE_URL", "google": "GEMINI_BASE_URL"}
 
 NON_CHAT_MARKERS = ["embed", "whisper", "tts", "audio", "dall", "image",
                     "moderation", "rerank", "realtime", "omni", "vl-"]
@@ -56,28 +56,17 @@ if os.environ.get("NINEROUTER_KEY") and not os.environ.get("AI_API_KEY"):
     os.environ["AI_API_KEY"] = os.environ["NINEROUTER_KEY"]
 
 
-def detect_providers():
-    out = []
-    for name in PRIORITY:
-        key = os.environ.get(KEY_VAR[name], "").strip()
-        if not key:
-            continue
-        p = {"name": name, "api_key": key, "model": None}
-        if name == "openai":
-            p["base_url"] = os.environ.get("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        elif name == "anthropic":
-            p["base_url"] = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
-        else:
-            b = os.environ.get("GEMINI_BASE_URL",
-                               "https://generativelanguage.googleapis.com/v1").rstrip("/")
-            if not b.endswith("/openai"):
-                b = b.rstrip("/").removesuffix("/v1beta").removesuffix("/v1") + "/v1beta/openai"
-            p["base_url"] = b
-        env_model = os.environ.get(MODEL_VAR[name], "").strip()
-        if env_model and env_model != "auto":
-            p["model"] = env_model
-        out.append(p)
-    return out
+def _get(url, headers, timeout=PROBE_TIMEOUT_S):
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read().decode("utf-8", "replace")
+
+
+def _post(url, headers, body, timeout=TIMEOUT_S):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, method="POST", headers=headers, data=data)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read().decode("utf-8", "replace")
 
 
 def _http(method, url, headers, body=None, timeout=TIMEOUT_S):
@@ -87,16 +76,23 @@ def _http(method, url, headers, body=None, timeout=TIMEOUT_S):
         return r.status, r.read().decode("utf-8", "replace")
 
 
-def list_models(provider):
+def _post(url, headers, body, timeout=TIMEOUT_S):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, method="POST", headers=headers, data=data)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read().decode("utf-8", "replace")
+
+
+def list_gateway_models(base_url, api_key=None):
+    """List chat models from an OpenAI-compatible gateway."""
+    url = base_url.rstrip("/") + "/models"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
-        if provider["name"] == "anthropic":
-            url = provider["base_url"].rstrip("/").removesuffix("/v1") + "/v1/models"
-            headers = {"x-api-key": provider["api_key"], "anthropic-version": "2023-06-01"}
-        else:
-            url = provider["base_url"].rstrip("/") + "/models"
-            headers = {"Authorization": f"Bearer {provider['api_key']}"}
-        _, text = _http("GET", url, headers, timeout=PROBE_TIMEOUT_S)
-        return [m["id"] for m in json.loads(text).get("data", []) if m.get("id")]
+        _, text = _get(url, headers, timeout=PROBE_TIMEOUT_S)
+        data = json.loads(text)
+        return [m.get("id") for m in data.get("data", []) if m.get("id")]
     except Exception:
         return []
 
@@ -109,22 +105,61 @@ def rank_models(ids):
     return free + cheap + rest
 
 
+def detect_providers():
+    """Auto-detect providers from env + gateway model listing."""
+    out = []
+
+    # 1. Explicit per-provider configs
+    for name in ["openai", "anthropic", "google"]:
+        key = os.environ.get(KEY_VAR[name], "").strip()
+        if not key:
+            continue
+        base = os.environ.get(BASE_VAR[name])
+        if name == "openai":
+            base = (base or "https://api.openai.com/v1").rstrip("/")
+        elif name == "anthropic":
+            base = (base or "https://api.anthropic.com").rstrip("/")
+        else:
+            b = base or "https://generativelanguage.googleapis.com/v1"
+            if not b.endswith("/openai"):
+                b = b.rstrip("/").removesuffix("/v1beta").removesuffix("/v1") + "/v1beta/openai"
+            base = b.rstrip("/")
+        env_model = os.environ.get(MODEL_VAR[name], "").strip()
+        out.append({"name": name, "api_key": key, "base_url": base,
+                    "model": env_model if env_model and env_model != "auto" else None,
+                    "mode": "explicit"})
+
+    # 2. Generic gateway auto-discovery
+    gateway_url = os.environ.get("AI_BASE_URL", "").strip() or os.environ.get("NINEROUTER_URL", "").strip()
+    gateway_key = os.environ.get("AI_API_KEY", "").strip() or os.environ.get("NINEROUTER_KEY", "").strip()
+    if gateway_url:
+        if not any(p.get("base_url") == gateway_url.rstrip("/") for p in out):
+            ids = list_gateway_models(gateway_url, gateway_key)
+            out.append({"name": "auto", "api_key": gateway_key, "base_url": gateway_url.rstrip("/"),
+                        "model": os.environ.get("AI_MODEL", "auto").strip() or "auto",
+                        "mode": "gateway", "available_models": rank_models(ids),
+                        "list_ok": bool(ids)})
+    return out
+
+
 def resolve_model(provider):
-    """Explicit model wins; else probe server list, else fallback candidates."""
-    if provider["model"]:
+    if provider.get("model") and provider["model"] != "auto":
         return provider["model"], "explicit"
-    ids = rank_models(list_models(provider))
-    probe = (ids or ["gpt-4o-mini", "gpt-4o", "deepseek-chat"])[:10]
+    ids = provider.get("available_models") or list_gateway_models(provider["base_url"], provider.get("api_key"))
+    ranked = rank_models(ids) if ids else []
+    probe = (ranked or ["gpt-4o-mini", "gpt-4o", "deepseek-chat"])[:10]
     for cand in probe:
         try:
             chat_once({**provider, "model": cand}, system="Reply with: ok",
                       messages=[{"role": "user", "content": "ping"}], tools=[],
                       timeout=PROBE_TIMEOUT_S)
             provider["model"] = cand
+            if "available_models" in provider and cand not in provider["available_models"]:
+                provider["available_models"].append(cand)
             return cand, "auto"
         except Exception:
             continue
-    provider["model"] = "gpt-4o-mini"
+    provider["model"] = probe[0]
     return provider["model"], "fallback"
 
 
@@ -171,8 +206,8 @@ def _to_anthropic_messages(messages):
                 blocks.append({"type": "text", "text": m["content"]})
             for tc in m["tool_calls"]:
                 blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"],
-                               "input": json.loads(tc["function"]["arguments"] or "{}")
-                               if isinstance(tc, dict) and "function" in tc else tc.get("args", {})})
+                               "input": json.loads(tc.get("function", {}).get("arguments", "{}")
+                                                   if isinstance(tc, dict) and "function" in tc else tc.get("args", {}))})
             out.append({"role": "assistant", "content": blocks})
         else:
             out.append({"role": m.get("role", "user"), "content": m.get("content") or ""})
@@ -216,11 +251,11 @@ def chat_once(provider, system="", messages=None, tools=None, timeout=TIMEOUT_S)
 
 
 def chat(system="", messages=None, tools=None):
-    """Try each provider in priority order (CRAG brain.chat behavior)."""
+    """Try each provider in priority order."""
     providers = detect_providers()
     if not providers:
-        raise RuntimeError("No LLM provider configured. Set AI_API_KEY (+AI_BASE_URL/AI_MODEL), "
-                           "ANTHROPIC_API_KEY, GEMINI_API_KEY or NINEROUTER_URL/NINEROUTER_KEY in .env")
+        raise RuntimeError("No LLM provider configured. Set AI_API_KEY (+AI_BASE_URL/AI_MODEL) "
+                           "or NINEROUTER_URL/NINEROUTER_KEY in .env")
     errors = []
     for p in providers:
         try:
