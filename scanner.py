@@ -28,6 +28,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+import db
+
 BASE_DIR = Path(__file__).resolve().parent
 BASE_URL = "https://www.kcex.com"
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -74,32 +76,36 @@ HEADERS = {
 def sync_symbols(cfg):
     """Keep `symbol` and `symbols` in sync.
 
-    `symbol` is the canonical single-symbol config (e.g. BTC_USDT).
-    `symbols` is the runtime list used by scan_market. One or the other
-    can be edited; the other is derived so it never drifts back.
+    `symbols` (the list actually used by scan_market) is the source of truth
+    whenever it is present, because that is what the bot/agent write on
+    /set_symbol. `symbol` is only a display/lookup convenience and is derived
+    from `symbols`. Deriving it the other way round let a stale `symbol` value
+    silently overwrite a freshly-set `symbols` list on every config load.
     """
     symbol = cfg.get("symbol")
     symbols = cfg.get("symbols")
 
-    # Explicit symbol takes precedence over an old symbols list.
-    if symbol and str(symbol).strip() and str(symbol).upper() != "ALL":
-        cfg["symbols"] = [str(symbol).strip()]
-        cfg["symbol"] = str(symbol).strip()
-        return cfg
-
-    if isinstance(symbols, str) and symbols.upper() != "ALL":
-        cfg["symbols"] = [symbols]
-        cfg["symbol"] = symbols
-        return cfg
-
+    # An explicit, non-empty symbols list wins.
     if isinstance(symbols, list) and symbols:
-        if len(symbols) == 1:
-            cfg["symbol"] = symbols[0]
-        else:
-            cfg["symbol"] = "ALL"
+        clean = [str(s).strip() for s in symbols if str(s).strip()]
+        if clean:
+            cfg["symbols"] = clean
+            cfg["symbol"] = clean[0] if len(clean) == 1 else "ALL"
+            return cfg
+
+    if isinstance(symbols, str) and symbols.strip() and symbols.strip().upper() != "ALL":
+        one = symbols.strip()
+        cfg["symbols"] = [one]
+        cfg["symbol"] = one
         return cfg
 
-    # symbols is ALL, missing, or empty
+    # symbols missing/empty/ALL -> fall back to `symbol`
+    if symbol and str(symbol).strip() and str(symbol).upper() != "ALL":
+        one = str(symbol).strip()
+        cfg["symbols"] = [one]
+        cfg["symbol"] = one
+        return cfg
+
     cfg["symbols"] = "ALL"
     cfg["symbol"] = "ALL"
     return cfg
@@ -109,6 +115,19 @@ def load_config():
     load_dotenv()
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
+    # Values stored in Postgres win over the file shipped in the repo, so the
+    # live config survives redeploys and is shared by every writer.
+    stored = db.load("config")
+    if stored:
+        cfg.update(stored)
+    else:
+        # First boot on a fresh database: seed it from the repo file so the
+        # settings volume starts non-empty instead of appearing to reset.
+        try:
+            if db.enabled():
+                db.put("config", cfg)
+        except Exception:
+            pass
     cfg.setdefault("symbol", "BTC_USDT")
     cfg.setdefault("symbols", "ALL")
     cfg = sync_symbols(cfg)
@@ -143,13 +162,18 @@ def load_config():
 
 
 def save_config(cfg):
-    # don't persist transient keys
-    data = {k: v for k, v in cfg.items()}
+    data = {k: v for k, v in cfg.items() if k != "state"}
+    # Postgres when configured (persistent), local file otherwise.
+    if db.put("config", data):
+        return
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def load_state():
+    stored = db.load("state")
+    if stored:
+        return stored
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             return json.load(f)
@@ -173,8 +197,12 @@ def fresh_state():
 
 
 def save_state(state):
+    # `cfg` is a live copy of the config, not part of the durable scan state.
+    data = {k: v for k, v in state.items() if k != "cfg"}
+    if db.put("state", data):
+        return
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def paused():
@@ -763,6 +791,7 @@ def print_status(cfg):
     print(f"Updated: {now} UTC")
     print(f"Config file : {CONFIG_FILE}")
     print(f"State file  : {STATE_FILE}")
+    print(f"Storage     : {db.backend()}" + (f" ({db.target()})" if db.enabled() else " (no DATABASE_URL)"))
     print(f"Paused      : {state.get('paused') or paused()}")
     print(f"Scan interval : {cfg.get('scan_interval_sec')}s")
     print(f"Report interval: {cfg.get('report_interval_sec')}s")
