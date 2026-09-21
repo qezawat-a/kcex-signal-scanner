@@ -1,26 +1,25 @@
 {
-  "symbol": "SAGA_USDT",
+  "symbols": "ALL",
+  "max_symbols": 30,
   "timeframes": [
     "1m",
     "3m",
     "5m",
     "15m"
   ],
-  "scan_interval_sec": 10,
-  "report_interval_sec": 30,
-  "min_confidence": 70,
-  "tf_min_confidence": 60,
-  "min_agreeing_strategies": 3,
-  "signal_scans_confirm": 2,
+  "scan_interval_sec": 60,
+  "report_interval_sec": 300,
+  "min_confidence": 0.6,
+  "tf_min_confidence": 0.5,
+  "min_agreeing_strategies": 2,
+  "signal_scans_confirm": 0,
   "reversal_alarm": true,
   "concurrency": 6,
   "sl_atr_multiple": 1.5,
   "tp_atr_multiple": 2.0,
   "telegram": {
-    "enabled": false,
-    "token": "",
-    "chat_id": ""
-  },
-  "symbols": "ALL",
-  "max_symbols": 30
+    "enabled": true,
+    "token": "...XLlI",
+    "chat_id": "8368047336"
+  }
 }
