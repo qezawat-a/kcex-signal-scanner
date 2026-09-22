@@ -1,6 +1,5 @@
 {
-  "symbols": "ALL",
-  "max_symbols": 30,
+  "symbol": "ALL",
   "timeframes": [
     "1m",
     "3m",
@@ -18,8 +17,10 @@
   "sl_atr_multiple": 1.5,
   "tp_atr_multiple": 2.0,
   "telegram": {
-    "enabled": true,
     "token": "...XLlI",
-    "chat_id": "8368047336"
-  }
+    "chat_id": "8368047336",
+    "enabled": true
+  },
+  "symbols": "ALL",
+  "max_symbols": 30
 }
