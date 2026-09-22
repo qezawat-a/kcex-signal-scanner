@@ -14,16 +14,6 @@ import sys
 import traceback
 from pathlib import Path
 
-# Railway/`docker logs` capture stdout through a pipe, which Python treats as
-# block-buffered: the scanner's print() output can sit in a 8 KB buffer for
-# minutes and never reach the log viewer, while logging (stderr) shows up
-# immediately. Force line buffering so scan reports appear as they happen.
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(line_buffering=True)
-    except Exception:
-        pass
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from scanner import load_config, paused, set_paused  # noqa: E402
 from telegram_bot import poll  # noqa: E402
