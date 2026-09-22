@@ -8,8 +8,8 @@
     "15m"
   ],
   "scan_interval_sec": 60,
-  "report_interval_sec": 300,
-  "min_confidence": 0.6,
+  "report_interval_sec": 60,
+  "min_confidence": 80.0,
   "tf_min_confidence": 0.5,
   "min_agreeing_strategies": 2,
   "signal_scans_confirm": 0,
